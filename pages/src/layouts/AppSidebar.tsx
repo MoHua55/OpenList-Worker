@@ -158,6 +158,7 @@ const AppSidebar: React.FC = () => {
         children: [
           { key: '/user/profile', icon: <UserOutlined />, label: '个人信息' },
           { key: '/user/password', icon: <KeyOutlined />, label: '修改密码' },
+          { key: '/user/connections', icon: <AppstoreOutlined />, label: '连接配置' },
         ],
       });
     }
@@ -173,6 +174,7 @@ const AppSidebar: React.FC = () => {
           { key: '/admin/path-rules', icon: <NodeIndexOutlined />, label: t('sidebar.pathRules') },
           { key: '/admin/path-manage', icon: <AppstoreOutlined />, label: t('sidebar.pathManage') },
           { key: '/admin/index-manage', icon: <FundProjectionScreenOutlined />, label: t('sidebar.indexManage') },
+          { key: '/admin/media', icon: <VideoCameraOutlined />, label: '媒体库管理' },
         ],
       });
       items.push({
@@ -211,6 +213,7 @@ const AppSidebar: React.FC = () => {
         children: [
           { key: '/user/profile', icon: <UserOutlined />, label: '个人信息' },
           { key: '/user/password', icon: <KeyOutlined />, label: '修改密码' },
+          { key: '/user/connections', icon: <AppstoreOutlined />, label: '连接配置' },
         ],
       });
     }
@@ -590,10 +593,10 @@ const AppSidebar: React.FC = () => {
                 </Text>
                 <Text style={{
                   fontSize: 11, lineHeight: '14px',
-                  color: '#3B82F6',
+                  color: isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.35)',
                   display: 'block',
                 }}>
-                  点击登录 →
+                  请先登录
                 </Text>
               </div>
             )}
@@ -602,6 +605,6 @@ const AppSidebar: React.FC = () => {
       </div>
     </Sider>
   );
-};
+}
 
 export default AppSidebar;

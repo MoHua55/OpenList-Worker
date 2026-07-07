@@ -1,73 +1,59 @@
 /**
- * 媒体库管理服务
- * 
- * 功能：
- *   - 递归扫描所有挂载点，按文件扩展名分类
- *   - 支持视频、音频、图片、书籍四种媒体类型
- *   - 支持分页和搜索
+ * 媒体库管理服务（重写版）
+ *
+ * 核心改进（相比旧版）：
+ *   1. 扫描结果持久化到 D1（media_items 表），不再实时扫描
+ *   2. 增量扫描：只插入新文件，不重复入库
+ *   3. 扫描进度写入 KV，前端可轮询
+ *   4. 集成 MediaScraper，支持按批刮削
+ *   5. 查询基于 D1，毫秒级响应
  */
 import { Context } from 'hono';
 import { MountManage } from '../mount/MountManage';
-import { FileInfo, FileType } from '../files/FilesObject';
+import { SavesManage } from '../saves/SavesManage';
+import { MediaScraper } from './MediaScraper';
+import {
+    MediaType, MediaItem, ScanPath, ScanProgress, MediaPage,
+    AlbumGroup, MediaResult, MEDIA_EXTENSIONS, detectMediaType,
+} from './MediaObject';
 
-// ========================================================================
-// 媒体类型定义
-// ========================================================================
+// KV 中扫描进度的键前缀
+const SCAN_PROGRESS_KEY = 'media_scan_progress';
 
-export type MediaCategory = 'video' | 'music' | 'image' | 'books';
+// ────────────────────────────────────────────────────────────
+// 辅助：直接操作 D1（SavesManage 抽象层过于高层，这里直接用 D1）
+// ────────────────────────────────────────────────────────────
 
-/** 媒体文件扩展名映射 */
-const MEDIA_EXTENSIONS: Record<MediaCategory, string[]> = {
-    video: ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'ts', 'm4v', 'rmvb', 'rm', '3gp', 'mpg', 'mpeg', 'vob'],
-    music: ['mp3', 'flac', 'wav', 'aac', 'ogg', 'wma', 'ape', 'alac', 'm4a', 'opus', 'aiff', 'dsf', 'dff'],
-    image: ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'tiff', 'tif', 'ico', 'heic', 'heif', 'avif', 'raw', 'cr2', 'nef'],
-    books: ['pdf', 'epub', 'mobi', 'azw3', 'djvu', 'cbr', 'cbz', 'fb2', 'txt', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt'],
-};
-
-/** FileType 枚举到媒体分类的映射 */
-const FILE_TYPE_TO_CATEGORY: Partial<Record<FileType, MediaCategory>> = {
-    [FileType.F_VID]: 'video',
-    [FileType.F_AUD]: 'music',
-    [FileType.F_IMG]: 'image',
-    [FileType.F_DOC]: 'books',
-};
-
-/** 媒体分类到 FileType 枚举的映射 */
-const CATEGORY_TO_FILE_TYPE: Record<MediaCategory, FileType> = {
-    video: FileType.F_VID,
-    music: FileType.F_AUD,
-    image: FileType.F_IMG,
-    books: FileType.F_DOC,
-};
-
-// ========================================================================
-// 媒体文件信息（扩展 FileInfo，增加挂载点路径）
-// ========================================================================
-
-export interface MediaFileInfo extends FileInfo {
-    /** 文件的完整虚拟路径（挂载点路径 + 相对路径） */
-    fullPath: string;
-    /** 所属挂载点路径 */
-    mountPath: string;
-    /** 媒体分类 */
-    mediaType: MediaCategory;
+function getD1(c: Context): any {
+    return (c.env as any)?.D1_DATA;
 }
 
-export interface MediaListResult {
-    flag: boolean;
-    text: string;
-    data?: {
-        category: MediaCategory;
-        files: MediaFileInfo[];
-        total: number;
-        page: number;
-        pageSize: number;
-    };
+async function d1Run(c: Context, sql: string, params: any[] = []): Promise<any> {
+    const db = getD1(c);
+    if (!db) throw new Error('D1_DATA 未绑定');
+    return db.prepare(sql).bind(...params).run();
 }
 
-// ========================================================================
-// 媒体库管理类
-// ========================================================================
+async function d1All(c: Context, sql: string, params: any[] = []): Promise<any[]> {
+    const db = getD1(c);
+    if (!db) return [];
+    const result = await db.prepare(sql).bind(...params).all();
+    return result?.results || [];
+}
+
+async function d1First(c: Context, sql: string, params: any[] = []): Promise<any> {
+    const db = getD1(c);
+    if (!db) return null;
+    return db.prepare(sql).bind(...params).first();
+}
+
+function now(): string {
+    return new Date().toISOString();
+}
+
+// ────────────────────────────────────────────────────────────
+// 主类
+// ────────────────────────────────────────────────────────────
 
 export class MediaManage {
     private c: Context;
@@ -76,204 +62,336 @@ export class MediaManage {
         this.c = c;
     }
 
-    /**
-     * 根据文件扩展名判断媒体分类
-     */
-    static getMediaCategory(fileName: string): MediaCategory | null {
-        const ext = fileName.split('.').pop()?.toLowerCase() || '';
-        for (const [category, extensions] of Object.entries(MEDIA_EXTENSIONS)) {
-            if (extensions.includes(ext)) {
-                return category as MediaCategory;
-            }
+    // ════════════════════════════════════════════════════════
+    // 扫描路径管理
+    // ════════════════════════════════════════════════════════
+
+    /** 获取所有扫描路径 */
+    async listScanPaths(mediaType?: MediaType): Promise<MediaResult<ScanPath[]>> {
+        try {
+            const sql = mediaType
+                ? `SELECT * FROM media_scan_paths WHERE media_type = ? ORDER BY id`
+                : `SELECT * FROM media_scan_paths ORDER BY id`;
+            const rows = await d1All(this.c, sql, mediaType ? [mediaType] : []);
+            return { flag: true, text: 'ok', data: rows };
+        } catch (e: any) {
+            return { flag: false, text: e.message };
         }
-        return null;
+    }
+
+    /** 添加扫描路径 */
+    async addScanPath(path: Omit<ScanPath, 'id'>): Promise<MediaResult<{ id: number }>> {
+        try {
+            const res = await d1Run(this.c,
+                `INSERT INTO media_scan_paths (media_type, scan_path, is_enabled, scan_depth)
+                 VALUES (?, ?, ?, ?)`,
+                [path.media_type, path.scan_path, path.is_enabled ?? 1, path.scan_depth ?? 5]
+            );
+            return { flag: true, text: '添加成功', data: { id: res.meta?.last_row_id } };
+        } catch (e: any) {
+            return { flag: false, text: e.message };
+        }
+    }
+
+    /** 删除扫描路径（同时删除其下所有条目） */
+    async removeScanPath(id: number): Promise<MediaResult> {
+        try {
+            await d1Run(this.c, `DELETE FROM media_items WHERE scan_path_id = ?`, [id]);
+            await d1Run(this.c, `DELETE FROM media_scan_paths WHERE id = ?`, [id]);
+            return { flag: true, text: '删除成功' };
+        } catch (e: any) {
+            return { flag: false, text: e.message };
+        }
+    }
+
+    // ════════════════════════════════════════════════════════
+    // 扫描逻辑
+    // ════════════════════════════════════════════════════════
+
+    /** 读取当前扫描进度（从 KV） */
+    async getScanProgress(): Promise<ScanProgress> {
+        try {
+            const kv = (this.c.env as any)?.KV_DATA;
+            if (!kv) return { status: 'idle', total_found: 0, total_new: 0, current_dir: '' };
+            const raw = await kv.get(SCAN_PROGRESS_KEY);
+            return raw ? JSON.parse(raw) : { status: 'idle', total_found: 0, total_new: 0, current_dir: '' };
+        } catch {
+            return { status: 'idle', total_found: 0, total_new: 0, current_dir: '' };
+        }
+    }
+
+    /** 写入扫描进度（到 KV，TTL 1 小时） */
+    private async setScanProgress(progress: ScanProgress): Promise<void> {
+        try {
+            const kv = (this.c.env as any)?.KV_DATA;
+            if (kv) await kv.put(SCAN_PROGRESS_KEY, JSON.stringify(progress), { expirationTtl: 3600 });
+        } catch { /* 忽略 KV 错误 */ }
     }
 
     /**
-     * 判断文件是否属于指定媒体分类
+     * 启动扫描指定路径（单个 ScanPath）
+     * 注意：CF Workers 单次请求 30s 限制，大目录需多次调用或使用 ctx.waitUntil()
      */
-    static isMediaFile(fileName: string, category?: MediaCategory): boolean {
-        if (category) {
-            const ext = fileName.split('.').pop()?.toLowerCase() || '';
-            return MEDIA_EXTENSIONS[category].includes(ext);
-        }
-        return MediaManage.getMediaCategory(fileName) !== null;
-    }
+    async scanPath(scanPathId: number): Promise<MediaResult<{ found: number; new_count: number }>> {
+        // 读取扫描路径配置
+        const pathRow: ScanPath | null = await d1First(this.c,
+            `SELECT * FROM media_scan_paths WHERE id = ?`, [scanPathId]);
+        if (!pathRow) return { flag: false, text: '扫描路径不存在' };
 
-    /**
-     * 扫描指定挂载点下的媒体文件
-     * 
-     * @param mountPath 挂载点路径
-     * @param category 媒体分类（可选，不指定则扫描所有类型）
-     * @param scanPath 扫描的子路径（默认根目录）
-     * @param maxDepth 最大递归深度（防止无限递归）
-     */
-    private async scanMount(
-        mountPath: string,
-        category?: MediaCategory,
-        scanPath: string = '/',
-        maxDepth: number = 3
-    ): Promise<MediaFileInfo[]> {
-        if (maxDepth <= 0) return [];
-
-        const results: MediaFileInfo[] = [];
+        const progress: ScanProgress = {
+            status: 'running',
+            scan_path_id: scanPathId,
+            total_found: 0,
+            total_new: 0,
+            current_dir: pathRow.scan_path,
+            started_at: now(),
+        };
+        await this.setScanProgress(progress);
 
         try {
+            const files = await this.recursiveScan(
+                pathRow.scan_path, pathRow.media_type, pathRow.scan_path,
+                pathRow.scan_depth ?? 5, progress
+            );
+
+            // 批量插入（忽略已存在的 file_path）
+            let newCount = 0;
+            for (const file of files) {
+                try {
+                    await d1Run(this.c,
+                        `INSERT OR IGNORE INTO media_items
+                         (media_type, scan_path_id, file_name, file_path, file_size, created_at, updated_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                        [file.media_type, scanPathId, file.file_name, file.file_path,
+                         file.file_size ?? 0, now(), now()]
+                    );
+                    newCount++;
+                } catch { /* file_path 冲突，跳过 */ }
+            }
+
+            // 更新 scan_path 的 last_scan 和 item_count
+            const total: any = await d1First(this.c,
+                `SELECT COUNT(*) as cnt FROM media_items WHERE scan_path_id = ?`, [scanPathId]);
+            await d1Run(this.c,
+                `UPDATE media_scan_paths SET last_scan = ?, item_count = ? WHERE id = ?`,
+                [now(), total?.cnt ?? 0, scanPathId]
+            );
+
+            progress.status = 'done';
+            progress.total_new = newCount;
+            progress.finished_at = now();
+            await this.setScanProgress(progress);
+
+            return { flag: true, text: '扫描完成', data: { found: files.length, new_count: newCount } };
+        } catch (e: any) {
+            progress.status = 'error';
+            progress.error = e.message;
+            await this.setScanProgress(progress);
+            return { flag: false, text: e.message };
+        }
+    }
+
+    /** 递归扫描目录（挂载虚拟路径），收集媒体文件信息 */
+    private async recursiveScan(
+        rootPath: string, mediaType: MediaType, currentPath: string,
+        depth: number, progress: ScanProgress
+    ): Promise<Partial<MediaItem>[]> {
+        if (depth <= 0) return [];
+        const results: Partial<MediaItem>[] = [];
+
+        try {
+            progress.current_dir = currentPath;
+            await this.setScanProgress(progress);
+
             const mountManage = new MountManage(this.c);
-            const fullPath = mountPath === '/'
-                ? scanPath
-                : (scanPath === '/' ? mountPath : `${mountPath}${scanPath}`);
+            const driveLoad = await mountManage.loader(currentPath, true, true);
+            if (!driveLoad?.[0]) return results;
 
-            const driveLoad = await mountManage.loader(fullPath, true, true);
-            if (!driveLoad || !driveLoad[0]) return results;
+            const relative = currentPath.replace(driveLoad[0].router, '') || '/';
+            const listing = await driveLoad[0].listFile({ path: relative });
+            if (!listing?.fileList) return results;
 
-            const relativePath = fullPath.replace(driveLoad[0].router, '') || '/';
-            const pathInfo = await driveLoad[0].listFile({ path: relativePath });
-
-            if (!pathInfo || !pathInfo.fileList) return results;
-
-            for (const file of pathInfo.fileList) {
-                if (file.fileType === FileType.F_DIR) {
-                    // 递归扫描子目录
-                    const subPath = scanPath === '/'
-                        ? `/${file.fileName}`
-                        : `${scanPath}/${file.fileName}`;
-                    const subResults = await this.scanMount(mountPath, category, subPath, maxDepth - 1);
-                    results.push(...subResults);
+            for (const file of listing.fileList) {
+                const filePath = currentPath.replace(/\/$/, '') + '/' + file.fileName;
+                if ((file as any).fileType === 0 || file.fileName.endsWith('/')) {
+                    // 目录：递归
+                    const sub = await this.recursiveScan(rootPath, mediaType, filePath, depth - 1, progress);
+                    results.push(...sub);
                 } else {
-                    // 检查是否为目标媒体类型
-                    const fileCategory = MediaManage.getMediaCategory(file.fileName);
-                    if (fileCategory && (!category || fileCategory === category)) {
-                        const fileFullPath = mountPath === '/'
-                            ? (scanPath === '/' ? `/${file.fileName}` : `${scanPath}/${file.fileName}`)
-                            : (scanPath === '/' ? `${mountPath}/${file.fileName}` : `${mountPath}${scanPath}/${file.fileName}`);
-
+                    // 文件：判断是否属于目标媒体类型
+                    const detected = detectMediaType(file.fileName);
+                    if (detected === mediaType) {
+                        progress.total_found++;
                         results.push({
-                            ...file,
-                            fullPath: fileFullPath,
-                            mountPath: mountPath,
-                            mediaType: fileCategory,
-                        });
+                            media_type: mediaType,
+                            file_name: file.fileName,
+                            file_path: filePath,
+                            file_size: (file as any).fileSize ?? 0,
+                                                });
                     }
                 }
             }
-        } catch (error) {
-            console.error(`扫描挂载点 ${mountPath} 失败:`, error);
+            return results;
+        } catch {
+            return results;
         }
-
-        return results;
     }
 
-    /**
-     * 获取媒体库文件列表
-     * 
-     * @param category 媒体分类
-     * @param page 页码（从1开始）
-     * @param pageSize 每页数量
-     * @param keyword 搜索关键词（可选）
-     * @param mountPath 限定挂载点（可选，不指定则扫描所有挂载点）
-     */
-    async list(
-        category: MediaCategory,
-        page: number = 1,
-        pageSize: number = 50,
-        keyword?: string,
-        mountPath?: string,
-    ): Promise<MediaListResult> {
-        try {
-            let allFiles: MediaFileInfo[] = [];
+    // ════════════════════════════════════════════════════════
+    // 刮削逻辑
+    // ════════════════════════════════════════════════════════
 
-            if (mountPath) {
-                // 扫描指定挂载点
-                allFiles = await this.scanMount(mountPath, category);
+    /**
+     * 批量刮削（从 media_items 取未刮削的，每次最多 batchSize 条）
+     * @returns 刮削成功数 / 失败数
+     */
+    async scrapeBatch(scanPathId?: number, batchSize = 10): Promise<MediaResult<{ ok: number; fail: number }>> {
+        try {
+            const sql = scanPathId
+                ? `SELECT id, media_type, file_name FROM media_items WHERE is_scraped = 0 AND scan_path_id = ? LIMIT ?`
+                : `SELECT id, media_type, file_name FROM media_items WHERE is_scraped = 0 LIMIT ?`;
+            const rows = scanPathId
+                ? await d1All(this.c, sql, [scanPathId, batchSize])
+                : await d1All(this.c, sql, [batchSize]);
+
+            const scraper = new MediaScraper(this.c);
+            const results = await scraper.scratchBatch(rows, batchSize);
+
+            let ok = 0, fail = 0;
+            for (const { id, result } of results) {
+                if (result.success) {
+                    await d1Run(this.c,
+                        `UPDATE media_items SET
+                         scraped_name=?, cover=?, description=?, release_date=?,
+                         rating=?, genre=?, album_name=?, album_artist=?,
+                         track_number=?, duration=?, video_type=?, season=?, episode=?,
+                         is_scraped=1, scrape_source=?, external_id=?, updated_at=?
+                         WHERE id=?`,
+                        [
+                            result.scraped_name ?? null, result.cover ?? null,
+                            result.description ?? null, result.release_date ?? null,
+                            result.rating ?? 0, result.genre ?? null,
+                            result.album_name ?? null, result.album_artist ?? null,
+                            result.track_number ?? null, result.duration ?? null,
+                            result.video_type ?? null, result.season ?? null,
+                            result.episode ?? null,
+                            result.source ?? 'unknown', result.external_id ?? null,
+                            now(), id,
+                        ]
+                    );
+                    ok++;
+                } else {
+                    // 标记为"已尝试但失败"，避免重复尝试
+                    await d1Run(this.c,
+                        `UPDATE media_items SET is_scraped=2, scrape_source=?, updated_at=? WHERE id=?`,
+                        [result.source ?? 'failed', now(), id]
+                    );
+                    fail++;
+                }
+            }
+            return { flag: true, text: `刮削完成：成功 ${ok} 条，失败 ${fail} 条`, data: { ok, fail } };
+        } catch (e: any) {
+            return { flag: false, text: e.message };
+        }
+    }
+
+    // ════════════════════════════════════════════════════════
+    // 查询接口（公开 API 用）
+    // ════════════════════════════════════════════════════════
+
+    /** 分页列出媒体条目 */
+    async listItems(params: {
+        media_type?: MediaType;
+        scan_path_id?: number;
+        keyword?: string;
+        page?: number;
+        page_size?: number;
+        only_scraped?: boolean;
+    }): Promise<MediaResult<MediaPage>> {
+        const { media_type, scan_path_id, keyword, page = 1, page_size = 48, only_scraped } = params;
+        try {
+            const conditions: string[] = [];
+            const values: any[] = [];
+
+            if (media_type) { conditions.push(`media_type = ?`); values.push(media_type); }
+            if (scan_path_id) { conditions.push(`scan_path_id = ?`); values.push(scan_path_id); }
+            if (keyword?.trim()) {
+                conditions.push(`(file_name LIKE ? OR scraped_name LIKE ?)`);
+                values.push(`%${keyword}%`, `%${keyword}%`);
+            }
+            if (only_scraped) { conditions.push(`is_scraped = 1`); }
+
+            const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+            const countRow: any = await d1First(this.c,
+                `SELECT COUNT(*) as cnt FROM media_items ${where}`, values);
+            const total = countRow?.cnt ?? 0;
+
+            const offset = (page - 1) * page_size;
+            const rows = await d1All(this.c,
+                `SELECT * FROM media_items ${where} ORDER BY scraped_name, file_name LIMIT ? OFFSET ?`,
+                [...values, page_size, offset]
+            );
+
+            return { flag: true, text: 'ok', data: { content: rows, total, page, page_size } };
+        } catch (e: any) {
+            return { flag: false, text: e.message };
+        }
+    }
+
+    /** 获取单条媒体详情 */
+    async getItem(id: number): Promise<MediaResult<MediaItem>> {
+        try {
+            const row = await d1First(this.c, `SELECT * FROM media_items WHERE id = ?`, [id]);
+            if (!row) return { flag: false, text: '条目不存在' };
+            return { flag: true, text: 'ok', data: row };
+        } catch (e: any) {
+            return { flag: false, text: e.message };
+        }
+    }
+
+    /** 获取专辑列表（音乐专属） */
+    async listAlbums(scanPathId?: number): Promise<MediaResult<AlbumGroup[]>> {
+        try {
+            const sql = scanPathId
+                ? `SELECT album_name, album_artist, cover, COUNT(*) as track_count
+                   FROM media_items WHERE media_type='music' AND album_name IS NOT NULL AND scan_path_id=?
+                   GROUP BY album_name, album_artist ORDER BY album_name`
+                : `SELECT album_name, album_artist, cover, COUNT(*) as track_count
+                   FROM media_items WHERE media_type='music' AND album_name IS NOT NULL
+                   GROUP BY album_name, album_artist ORDER BY album_name`;
+            const rows = await d1All(this.c, sql, scanPathId ? [scanPathId] : []);
+            return { flag: true, text: 'ok', data: rows as any };
+        } catch (e: any) {
+            return { flag: false, text: e.message };
+        }
+    }
+
+    /** 清空指定类型或全部媒体条目 */
+    async clearItems(mediaType?: MediaType, scanPathId?: number): Promise<MediaResult> {
+        try {
+            if (scanPathId) {
+                await d1Run(this.c, `DELETE FROM media_items WHERE scan_path_id = ?`, [scanPathId]);
+            } else if (mediaType) {
+                await d1Run(this.c, `DELETE FROM media_items WHERE media_type = ?`, [mediaType]);
             } else {
-                // 扫描所有启用的挂载点
-                const mountManage = new MountManage(this.c);
-                const mountResult = await mountManage.select();
-
-                if (!mountResult.flag || !mountResult.data) {
-                    return { flag: false, text: '获取挂载点列表失败' };
-                }
-
-                for (const mount of mountResult.data) {
-                    if (!mount.is_enabled) continue;
-                    const files = await this.scanMount(mount.mount_path, category);
-                    allFiles.push(...files);
-                }
+                await d1Run(this.c, `DELETE FROM media_items`, []);
             }
-
-            // 关键词过滤
-            if (keyword && keyword.trim()) {
-                const kw = keyword.trim().toLowerCase();
-                allFiles = allFiles.filter(f => f.fileName.toLowerCase().includes(kw));
-            }
-
-            // 按修改时间倒序排列（最新的在前）
-            allFiles.sort((a, b) => {
-                const ta = a.timeModify ? new Date(a.timeModify).getTime() : 0;
-                const tb = b.timeModify ? new Date(b.timeModify).getTime() : 0;
-                return tb - ta;
-            });
-
-            // 分页
-            const total = allFiles.length;
-            const start = (page - 1) * pageSize;
-            const pagedFiles = allFiles.slice(start, start + pageSize);
-
-            return {
-                flag: true,
-                text: 'Success',
-                data: {
-                    category,
-                    files: pagedFiles,
-                    total,
-                    page,
-                    pageSize,
-                },
-            };
-        } catch (error: any) {
-            console.error('媒体库查询失败:', error);
-            return { flag: false, text: error.message || '媒体库查询失败' };
+            return { flag: true, text: '清除成功' };
+        } catch (e: any) {
+            return { flag: false, text: e.message };
         }
     }
 
-    /**
-     * 获取媒体库统计信息
-     * 返回各分类的文件数量
-     */
-    async stats(): Promise<{
-        flag: boolean;
-        text: string;
-        data?: Record<MediaCategory, number>;
-    }> {
+    /** 统计各类型数量 */
+    async stats(): Promise<MediaResult<Record<MediaType, number>>> {
         try {
-            const mountManage = new MountManage(this.c);
-            const mountResult = await mountManage.select();
-
-            if (!mountResult.flag || !mountResult.data) {
-                return { flag: false, text: '获取挂载点列表失败' };
-            }
-
-            const counts: Record<MediaCategory, number> = {
-                video: 0,
-                music: 0,
-                image: 0,
-                books: 0,
-            };
-
-            for (const mount of mountResult.data) {
-                if (!mount.is_enabled) continue;
-                // 扫描所有类型（不限定分类）
-                const files = await this.scanMount(mount.mount_path, undefined, '/', 2);
-                for (const file of files) {
-                    counts[file.mediaType]++;
-                }
-            }
-
-            return { flag: true, text: 'Success', data: counts };
-        } catch (error: any) {
-            console.error('媒体库统计失败:', error);
-            return { flag: false, text: error.message || '统计失败' };
+            const rows = await d1All(this.c,
+                `SELECT media_type, COUNT(*) as cnt FROM media_items GROUP BY media_type`, []);
+            const data: Record<string, number> = { video: 0, music: 0, image: 0, book: 0 };
+            for (const r of rows) data[r.media_type] = r.cnt;
+            return { flag: true, text: 'ok', data: data as any };
+        } catch (e: any) {
+            return { flag: false, text: e.message };
         }
     }
 }

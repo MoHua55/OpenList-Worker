@@ -47,6 +47,35 @@ function requireAdmin(c: Context): boolean {
     return user ? UsersManage.isAdmin(user) : false;
 }
 
+/**
+ * SSRF 防护：检查 URL 是否指向内网/本地地址（RFC 1918 / RFC 3927 / loopback）
+ * 安全修复 SEC-03: 防止离线下载、分享代理被用于攻击内网
+ */
+function isPrivateUrl(url: string): boolean {
+    try {
+        const parsed = new URL(url);
+        const host = parsed.hostname;
+        // 拒绝非 http/https 协议
+        if (!['http:', 'https:'].includes(parsed.protocol)) return true;
+        // 拒绝 localhost
+        if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
+        // 拒绝内网 IPv4（RFC 1918）
+        const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+        if (ipv4) {
+            const [, a, b] = ipv4.map(Number);
+            if (a === 10) return true;                          // 10.0.0.0/8
+            if (a === 172 && b >= 16 && b <= 31) return true;  // 172.16.0.0/12
+            if (a === 192 && b === 168) return true;            // 192.168.0.0/16
+            if (a === 169 && b === 254) return true;            // 169.254.0.0/16 (链路本地)
+            if (a === 0) return true;                           // 0.0.0.0/8
+            if (a === 127) return true;                         // 127.0.0.0/8 (loopback)
+        }
+        return false;
+    } catch {
+        return true; // 解析失败视为不安全
+    }
+}
+
 // ============================================================
 // 路由注册
 // ============================================================
@@ -329,8 +358,13 @@ export function fsWriteRoutes(app: Hono<any>) {
         if (!path) return errorResp(c, 'path 不能为空', 400);
         if (!urls.length) return errorResp(c, 'urls 不能为空', 400);
 
-        // 简单实现：记录离线下载任务（实际需要后台任务队列）
-        // 此处返回任务 ID 列表
+        // SSRF 防护 SEC-03: 拒绝内网/本地地址
+        for (const url of urls) {
+            if (isPrivateUrl(url)) {
+                return errorResp(c, `不允许访问内网或本地地址: ${url}`, 400);
+            }
+        }
+
         const tasks = urls.map((url, i) => ({
             id: `offline_${Date.now()}_${i}`,
             url,
@@ -344,37 +378,33 @@ export function fsWriteRoutes(app: Hono<any>) {
     // ------------------------------------------------------------------
     // POST /api/fs/batch_rename — 批量重命名
     // Body: { src_dir, rename_pairs: [{src_name, dst_name}] }
-    // ------------------------------------------------------------------
     app.post('/api/fs/batch_rename', async (c: Context): Promise<any> => {
-        const user = requireAuth(c);
-        if (!user) return errorResp(c, '未登录', 401);
-
         const body = await parseBody(c);
         const srcDir: string = body.src_dir;
         const renamePairs: Array<{ src_name: string; dst_name: string }> = body.rename_pairs || [];
         if (!srcDir) return errorResp(c, 'src_dir 不能为空', 400);
         if (!renamePairs.length) return errorResp(c, 'rename_pairs 不能为空', 400);
 
-        const mountManage = new MountManage(c);
-
+        const results: any[] = [];
         for (const pair of renamePairs) {
-            const srcPath = `${srcDir}/${pair.src_name}`.replace(/\/+/g, '/');
-            const dstPath = `${srcDir}/${pair.dst_name}`.replace(/\/+/g, '/');
-
-            const driveLoad = await mountManage.loader(srcPath, false, false);
-            if (!driveLoad || !driveLoad[0]) continue;
-
-            await driveLoad[0].loadSelf();
-            const relSrc = srcPath.replace(driveLoad[0].router, '') || '/';
-            const relDst = dstPath.replace(driveLoad[0].router, '') || '/';
-
+            const srcPath = srcDir.replace(/\/$/, '') + '/' + pair.src_name;
             try {
-                await driveLoad[0].moveFile({ path: relSrc }, { path: relDst });
+                const mountManage = new MountManage(c);
+                const driveLoad = await mountManage.loader(srcPath, false, false);
+                if (!driveLoad || !driveLoad[0]) {
+                    results.push({ src: pair.src_name, dst: pair.dst_name, success: false, msg: '文件不存在' });
+                    continue;
+                }
+                await driveLoad[0].loadSelf();
+                const relativePath = srcPath.replace(driveLoad[0].router, '') || '/';
+                const parentDir = relativePath.replace(/\/[^\/]+$/, '') || '/';
+                const destPath = parentDir === '/' ? `/${pair.dst_name}` : `${parentDir}/${pair.dst_name}`;
+                await driveLoad[0].moveFile({ path: relativePath }, { path: destPath });
+                results.push({ src: pair.src_name, dst: pair.dst_name, success: true, msg: '' });
             } catch (e: any) {
-                return errorResp(c, `重命名 ${pair.src_name} 失败: ${e.message}`, 500);
+                results.push({ src: pair.src_name, dst: pair.dst_name, success: false, msg: e.message });
             }
         }
-
-        return successResp(c);
+        return successResp(c, { results });
     });
 }

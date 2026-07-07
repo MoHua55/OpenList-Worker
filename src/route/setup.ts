@@ -88,6 +88,23 @@ export function setupRoutes(app: Hono<any>) {
     });
 
     // ------------------------------------------------------------------
+    // GET /api/system/health — 系统健康检查（公开）
+    // 检查 JWT_SECRET 是否已配置，未配置时返回 config_required 错误
+    // ------------------------------------------------------------------
+    app.get('/api/system/health', async (c: Context): Promise<any> => {
+        const { isJwtSecretConfigured } = await import('../users/UsersManage');
+        const jwtReady = isJwtSecretConfigured(c);
+        if (!jwtReady) {
+            return c.json({
+                code: 503,
+                message: 'JWT_SECRET_NOT_CONFIGURED',
+                error: '系统尚未完成安全配置：请在 wrangler.jsonc 的 vars 中设置 JWT_SECRET（至少16位随机字符串），然后重新部署。',
+            }, 503);
+        }
+        return successResp(c, { status: 'ok' });
+    });
+
+    // ------------------------------------------------------------------
     // 旧版兼容路由（保留原有格式）
     // ------------------------------------------------------------------
     app.use('/@setup/:action/:method', async (c: Context): Promise<any> => {

@@ -312,7 +312,7 @@ const UserManagement: React.FC = () => {
     };
 
     return (
-        <div style={{padding: 24}}>
+        <div className="animate-fade-in-up" style={{padding: 24}}>
             {error && (
                 <Alert
                     message={error}

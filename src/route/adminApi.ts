@@ -554,14 +554,14 @@ export function adminApiRoutes(app: Hono<any>) {
     });
 
     // POST /api/admin/setting/reset_token — 重置 token
+    // 安全修复 SEC-06: 不在响应中返回密钥值，防止密钥被日志/CDN记录
     app.post('/api/admin/setting/reset_token', async (c: Context): Promise<any> => {
-        // 生成新的 JWT 密钥
         const newSecret = Array.from(crypto.getRandomValues(new Uint8Array(32)))
             .map(b => b.toString(16).padStart(2, '0')).join('');
-
         const adminManage = new AdminManage(c);
         await adminManage.config('jwt_secret', newSecret);
-        return successResp(c, { token: newSecret });
+        // 仅返回成功状态，不暴露密钥值
+        return successResp(c, { message: 'Token重置成功，新密钥已保存，所有已登录用户需要重新登录' });
     });
 
     // ============================================================
@@ -838,7 +838,7 @@ export function adminApiRoutes(app: Hono<any>) {
         const pageSize = parseInt(c.req.query('pageSize') || '50');
         const keyword = c.req.query('keyword') || '';
         const mediaManage = new MediaManage(c);
-        const result = await mediaManage.list(mediaType, page, pageSize, keyword || undefined);
+        const result = await mediaManage.listScanPaths(mediaType);
         if (!result.flag) return errorResp(c, result.text, 400);
         return successResp(c, result.data);
     });
@@ -846,8 +846,7 @@ export function adminApiRoutes(app: Hono<any>) {
     // GET /api/admin/media/stats — 获取媒体库统计
     app.get('/api/admin/media/stats', async (c: Context): Promise<any> => {
         const mediaManage = new MediaManage(c);
-        const result = await mediaManage.stats();
-        if (!result.flag) return errorResp(c, result.text, 400);
-        return successResp(c, result.data);
+        const progress = await mediaManage.getScanProgress();
+        return successResp(c, progress);
     });
 }

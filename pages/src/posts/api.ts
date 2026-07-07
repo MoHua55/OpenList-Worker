@@ -111,27 +111,39 @@ class ApiService {
             (error: AxiosError) => {
                 if (error.response) {
                     // 服务器响应错误
-                    const {data, status} = error.response;
-                    
+                    const {data, status, config} = error.response;
+
                     // 处理401未登录状态
                     if (status === 401) {
-                        // 清除 Zustand 认证状态（同时会清除 localStorage 中的持久化数据）
-                        useAuthStore.getState().logout();
-                        
-                        // 检查当前是否已经在登录页面，避免无限重定向
-                        if (window.location.pathname !== '/login') {
-                            // 跳转到登录页面
-                            window.location.href = '/login';
-                        }
-                        
-                        // 处理后端错误响应格式
-                        if (data && typeof data === 'object') {
-                            if (data.hasOwnProperty('flag') && data.hasOwnProperty('text')) {
-                                throw new ApiError(data.text || '用户未登录', status, error.response);
+                        // 判断是否为登录请求
+                        const isLoginRequest = config?.url?.includes('/api/auth/login');
+
+                        // 如果不是登录请求，说明是 token 失效，需要清除状态并跳转
+                        if (!isLoginRequest) {
+                            // 清除 Zustand 认证状态（同时会清除 localStorage 中的持久化数据）
+                            useAuthStore.getState().logout();
+
+                            // 检查当前是否已经在登录页面，避免无限重定向
+                            if (window.location.pathname !== '/login') {
+                                // 跳转到登录页面
+                                window.location.href = '/login';
                             }
                         }
-                        
-                        throw new ApiError('用户未登录', status, error.response);
+
+                        // 处理后端错误响应格式，提取真实的错误信息
+                        if (data && typeof data === 'object') {
+                            // 新版格式：{code: number, message: string}
+                            if (data.hasOwnProperty('message')) {
+                                throw new ApiError(data.message, data.code || status, error.response);
+                            }
+                            // 旧版格式：{flag: boolean, text: string}
+                            if (data.hasOwnProperty('flag') && data.hasOwnProperty('text')) {
+                                throw new ApiError(data.text, status, error.response);
+                            }
+                        }
+
+                        // 默认错误信息
+                        throw new ApiError(isLoginRequest ? '用户名或密码错误' : '用户未登录', status, error.response);
                     }
                     
                     // 处理其他后端错误响应格式
@@ -529,26 +541,7 @@ export const taskApi = {
     // 清除已成功任务
     clearSucceeded: (type: string) =>
         apiService.post(`/api/task/${type}/clear_succeeded`, {}),
-
-    // 重试失败任务
-    retryFailed: (type: string) =>
-        apiService.post(`/api/task/${type}/retry_failed`, {}),
 };
 
-// 系统管理相关API
-export const systemApi = {
-    // 获取系统信息（需认证）
-    getSystemInfo: () => apiService.get('/@setup/info/none'),
-
-    // 检查系统初始化状态（公开）
-    getSetupStatus: () => apiService.get('/@setup/status/none'),
-
-    // 系统初始化（公开）
-    init: (data: { username: string; password: string; email?: string }) =>
-        apiService.post('/@setup/init/none', data),
-
-    // ping
-    ping: () => apiService.get('/ping'),
-};
-
-export default apiService;
+const api = apiService;
+export default api;

@@ -151,3 +151,53 @@ CREATE TABLE admin -- 全局设置
     admin_data TEXT                    NOT NULL  -- 设置数据
     -- 拓展信息 ===============================================
 );
+
+CREATE TABLE media_scan_paths -- 媒体库扫描路径配置
+(
+    id          INTEGER  PRIMARY KEY AUTOINCREMENT,
+    media_type  TEXT     NOT NULL,          -- video / music / image / book
+    scan_path   TEXT     NOT NULL,          -- 扫描根路径（挂载虚拟路径）
+    is_enabled  INTEGER  NOT NULL DEFAULT 1,-- 是否启用
+    scan_depth  INTEGER  NOT NULL DEFAULT 5,-- 最大递归深度
+    last_scan   TEXT,                       -- 上次扫描时间 ISO8601
+    item_count  INTEGER  DEFAULT 0          -- 已扫描文件数
+);
+
+CREATE TABLE media_items -- 媒体库条目
+(
+    -- 标识 =============================================
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    media_type      TEXT    NOT NULL,       -- video / music / image / book
+    scan_path_id    INTEGER NOT NULL,       -- 所属扫描路径 ID (FK media_scan_paths.id)
+    file_name       TEXT    NOT NULL,       -- 原始文件名
+    file_path       TEXT    NOT NULL UNIQUE,-- 虚拟完整路径（唯一约束，避免重复扫描）
+    file_size       INTEGER DEFAULT 0,
+    mime_type       TEXT,
+    -- 刮削元数据 ========================================
+    scraped_name    TEXT,                   -- 刮削得到的名称
+    cover           TEXT,                   -- 封面图 URL
+    description     TEXT,                   -- 简介
+    release_date    TEXT,                   -- 发行日期 YYYY-MM-DD
+    rating          REAL    DEFAULT 0,      -- 评分 0-10
+    genre           TEXT,                   -- 流派 / 类别（逗号分隔）
+    -- 音乐专属 ==========================================
+    album_name      TEXT,
+    album_artist    TEXT,
+    track_number    INTEGER,
+    duration        INTEGER,                -- 时长（秒）
+    lyrics          TEXT,
+    -- 视频专属 ==========================================
+    video_type      TEXT,                   -- movie / tv
+    season          INTEGER,
+    episode         INTEGER,
+    -- 状态 =============================================
+    is_scraped      INTEGER DEFAULT 0,      -- 是否已刮削
+    scrape_source   TEXT,                   -- 刮削来源 tmdb/itunes/openlibrary
+    external_id     TEXT,                   -- 刮削源的外部 ID
+    created_at      TEXT    NOT NULL,       -- 入库时间 ISO8601
+    updated_at      TEXT    NOT NULL        -- 更新时间 ISO8601
+);
+
+CREATE INDEX idx_media_items_type     ON media_items(media_type);
+CREATE INDEX idx_media_items_path_id  ON media_items(scan_path_id);
+CREATE INDEX idx_media_items_scraped  ON media_items(is_scraped);

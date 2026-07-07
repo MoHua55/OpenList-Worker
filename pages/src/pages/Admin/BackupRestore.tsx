@@ -49,7 +49,7 @@ const BackupRestore: React.FC = () => {
   };
 
   return (
-    <div style={{ padding: 24, maxWidth: 800 }}>
+    <div className="animate-fade-in-up" style={{ padding: 24, maxWidth: 800 }}>
       <Title level={3} style={{ marginBottom: 24 }}>
         <SaveOutlined style={{ marginRight: 12 }} />
         备份还原

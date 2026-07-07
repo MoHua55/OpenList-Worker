@@ -47,6 +47,7 @@ import { fsUploadDownloadRoutes } from './route/fsUpload';
 import { sharingRoutes } from './route/sharing';
 import { taskRoutes } from './route/taskApi';
 import { adminApiRoutes } from './route/adminApi';
+import { mediaApiRoutes } from './route/mediaApi';
 import { setupRoutes } from './route/setup';
 
 // ========================================================================
@@ -123,6 +124,13 @@ adminApiRoutes(app);       // GET /api/public/settings, GET /ping
                            // /api/admin/user/*, /api/admin/storage/*, /api/admin/driver/*
                            // /api/admin/setting/*, /api/admin/meta/*
 
+// --- 媒体库 ---
+mediaApiRoutes(app);       // GET  /api/public/media/list|item|albums|scan_paths|stats
+                           // POST /api/admin/media/scan_paths/add|remove
+                           // POST /api/admin/media/scan/start, GET /scan/progress
+                           // POST /api/admin/media/scrape/start
+                           // GET  /api/admin/media/items, POST /items/update|delete|clear
+
 // --- 系统初始化 ---
 setupRoutes(app);          // GET /@setup/status/none, POST /@setup/init/none（公开）
                            // GET /@setup/info/none（需认证）
@@ -186,14 +194,11 @@ app.get('*', async (c: Context) => {
         const indexResp = await c.env.ASSETS.fetch(new Request(indexUrl.toString(), c.req.raw));
         // 克隆响应并强制设置正确的 Content-Type
         return new Response(indexResp.body, {
-            status: 200,
-            headers: {
-                'Content-Type': 'text/html; charset=utf-8',
-                'Cache-Control': 'no-cache, no-store, must-revalidate',
-            },
+               headers: { 'Content-Type': 'text/html; charset=utf-8' },
+            status: indexResp.status,
         });
     } catch {
-        return c.text('Service Unavailable', 503);
+        return c.text('Not Found', 404);
     }
 });
 

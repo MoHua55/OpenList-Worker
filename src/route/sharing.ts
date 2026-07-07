@@ -336,13 +336,30 @@ export function sharingRoutes(app: Hono<any>) {
                 }
             }
 
-            // 代理下载
+            // 代理下载（SEC-04: 过滤内网/本地地址，防止 SSRF）
             if (link.direct || link.url) {
+                const targetUrl = link.direct || link.url;
+                // SSRF 防护：拒绝内网/本地地址
+                try {
+                    const parsed = new URL(targetUrl);
+                    const h = parsed.hostname;
+                    const isPrivate = h === 'localhost' || h === '127.0.0.1' || h === '::1' ||
+                        /^10\./.test(h) ||
+                        /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
+                        /^192\.168\./.test(h) ||
+                        /^169\.254\./.test(h);
+                    if (isPrivate || !['http:', 'https:'].includes(parsed.protocol)) {
+                        return c.text('不允许访问内网或本地地址', 400);
+                    }
+                } catch {
+                    return c.text('下载链接无效', 400);
+                }
+
                 const rangeHeader = c.req.header('Range');
                 const fetchHeaders: Record<string, string> = { ...(link.header || {}) };
                 if (rangeHeader) fetchHeaders['Range'] = rangeHeader;
 
-                const upstream = await fetch(link.direct || link.url, { headers: fetchHeaders });
+                const upstream = await fetch(targetUrl, { headers: fetchHeaders });
                 const fileName = fullPath.split('/').pop() || 'file';
                 const responseHeaders: Record<string, string> = {
                     'Content-Type': upstream.headers.get('Content-Type') || 'application/octet-stream',
@@ -357,27 +374,13 @@ export function sharingRoutes(app: Hono<any>) {
                 return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
             }
 
-            return c.text('无法获取下载链接', 500);
-        } catch (e: any) {
-            return c.text(e.message || '下载失败', 500);
+            return c.text('不支持的下载方式', 500);
+        } catch (e) {
+            return c.text('下载失败', 500);
         }
     }
 
-    // 分享根路径
-    app.get('/sd/:sid', async (c: Context): Promise<any> => {
-        return handleSharingDown(c, c.req.param('sid'), '/');
-    });
-    app.on('HEAD', '/sd/:sid', async (c: Context): Promise<any> => {
-        return handleSharingDown(c, c.req.param('sid'), '/');
-    });
-
-    // 分享子路径
-    app.get('/sd/:sid/*', async (c: Context): Promise<any> => {
-        const subPath = '/' + (c.req.param('*') || '');
-        return handleSharingDown(c, c.req.param('sid'), subPath);
-    });
-    app.on('HEAD', '/sd/:sid/*', async (c: Context): Promise<any> => {
-        const subPath = '/' + (c.req.param('*') || '');
-        return handleSharingDown(c, c.req.param('sid'), subPath);
-    });
+    // 路由注册：单层路径和多层路径
+    app.get('/sd/:sid', async (c: Context) => handleSharingDown(c, c.req.param('sid') ?? '', '/'));
+    app.get('/sd/:sid/*', async (c: Context) => handleSharingDown(c, c.req.param('sid') ?? '', '/' + (c.req.param('*') ?? '')));
 }

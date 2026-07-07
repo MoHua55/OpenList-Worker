@@ -48,7 +48,7 @@ const AppearanceSettings: React.FC = () => {
   };
 
   return (
-    <div style={{ padding: 24, maxWidth: 800 }}>
+    <div className="animate-fade-in-up" style={{ padding: 24, maxWidth: 800 }}>
       <Title level={3} style={{ marginBottom: 24 }}>
         <BgColorsOutlined style={{ marginRight: 12 }} />
         外观设置

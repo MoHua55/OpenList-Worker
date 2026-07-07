@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Typography, Input, Button, Row, Col, Switch, Divider, Space, message } from 'antd';
-import { SaveOutlined } from '@ant-design/icons';
+import { Card, Typography, Input, Button, Row, Col, Switch, Divider, Space, message, Tooltip } from 'antd';
+import { SaveOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import apiService from '../../posts/api';
 
 const SiteSettings: React.FC = () => {
@@ -14,6 +14,9 @@ const SiteSettings: React.FC = () => {
     requireEmailVerification: true,
     enableCaptcha: true,
     maintenanceMode: false,
+    // 用户目录和安全配置（新增）
+    userHomeDir: '/home/',
+    corsAllowedOrigins: '',
   });
 
   const handleSettingChange = (field: string, value: any) => {
@@ -37,10 +40,13 @@ const SiteSettings: React.FC = () => {
             siteDescription: data['site_description'] ?? prev.siteDescription,
             maxFileSize: data['max_file_size'] ?? prev.maxFileSize,
             maxStoragePerUser: data['max_storage_per_user'] ?? prev.maxStoragePerUser,
-            allowRegistration: data['allow_registration'] === '1' || data['allow_registration'] === true,
+            allowRegistration: data['allow_registration'] !== '0' && data['allow_registration'] !== 'false',
             requireEmailVerification: data['require_email_verification'] === '1' || data['require_email_verification'] === true,
             enableCaptcha: data['enable_captcha'] === '1' || data['enable_captcha'] === true,
             maintenanceMode: data['maintenance_mode'] === '1' || data['maintenance_mode'] === true,
+            // 新字段
+            userHomeDir: data['user_home_dir'] ?? prev.userHomeDir,
+            corsAllowedOrigins: data['cors_allowed_origins'] ?? prev.corsAllowedOrigins,
           }));
         }
       } catch (err) {
@@ -62,6 +68,9 @@ const SiteSettings: React.FC = () => {
         { admin_keys: 'require_email_verification', admin_data: settings.requireEmailVerification ? '1' : '0' },
         { admin_keys: 'enable_captcha', admin_data: settings.enableCaptcha ? '1' : '0' },
         { admin_keys: 'maintenance_mode', admin_data: settings.maintenanceMode ? '1' : '0' },
+        // 新增字段
+        { admin_keys: 'user_home_dir', admin_data: settings.userHomeDir || '/home/' },
+        { admin_keys: 'cors_allowed_origins', admin_data: settings.corsAllowedOrigins },
       ];
       const result = await apiService.post('/api/admin/setting/save', { items });
       if (result.flag) {
@@ -77,7 +86,7 @@ const SiteSettings: React.FC = () => {
   const labelStyle: React.CSSProperties = { display: 'block', marginBottom: 6, fontWeight: 500 };
 
   return (
-    <div style={{ width: '100%', height: '100%', padding: 24 }}>
+    <div className="animate-fade-in-up" style={{ width: '100%', height: '100%', padding: 24 }}>
       <Row gutter={[24, 24]}>
         {/* 基本信息 */}
         <Col xs={24} md={12}>
@@ -175,18 +184,13 @@ const SiteSettings: React.FC = () => {
             </Space>
           </Card>
         </Col>
-
-        {/* 保存按钮 */}
-        <Col xs={24}>
-          <div style={{ textAlign: 'center', marginTop: 8 }}>
-            <Button type="primary" size="large" icon={<SaveOutlined />} onClick={handleSave}>
-              保存设置
-            </Button>
-          </div>
-        </Col>
       </Row>
+
+      <div style={{ marginTop: 24, textAlign: 'right' }}>
+        <Button type="primary" onClick={handleSave}>保存设置</Button>
+      </div>
     </div>
   );
-};
+}
 
 export default SiteSettings;

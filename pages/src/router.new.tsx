@@ -77,6 +77,7 @@ const AppearanceSettings = lazy(() => import('./pages/Admin/AppearanceSettings')
 const BackupRestore = lazy(() => import('./pages/Admin/BackupRestore'));
 const ShareSettings = lazy(() => import('./pages/Admin/ShareSettings'));
 const CryptSettings = lazy(() => import('./pages/Admin/CryptSettings'));
+const AdminMediaLibrary = lazy(() => import('./pages/Admin/AdminMediaLibrary'));
 const UploadManage = lazy(() => import('./pages/Users/UploadManage'));
 const CloudCopy = lazy(() => import('./pages/Users/CloudCopy'));
 const CloudMove = lazy(() => import('./pages/Users/CloudMove'));
@@ -157,6 +158,8 @@ export const router = createBrowserRouter([
       { path: 'user/shares', element: <ProtectedRoute><LazyLoad><ShareManage /></LazyLoad></ProtectedRoute> },
       // 加密
       { path: 'user/crypt', element: <ProtectedRoute><LazyLoad><CryptConfig /></LazyLoad></ProtectedRoute> },
+      // 连接配置
+      { path: 'user/connections', element: <ProtectedRoute><LazyLoad><ConnectionConfig /></LazyLoad></ProtectedRoute> },
 
       // ═══════════ 管理员路由 ═══════════
       // 存储管理
@@ -175,11 +178,11 @@ export const router = createBrowserRouter([
 
       // 分享设置
       { path: 'admin/share-settings', element: <AdminRoute><LazyLoad><ShareSettings /></LazyLoad></AdminRoute> },
+      // 安全管理
       // 安全管理
       { path: 'admin/crypt-settings', element: <AdminRoute><LazyLoad><CryptSettings /></LazyLoad></AdminRoute> },
-
-      // ═══════════ 404 ═══════════
-      { path: '*', element: <Navigate to="/files" replace /> },
+      // 媒体库管理
+      { path: 'admin/media', element: <AdminRoute><LazyLoad><AdminMediaLibrary /></LazyLoad></AdminRoute> },
     ],
   },
 ]);

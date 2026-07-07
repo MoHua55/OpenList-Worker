@@ -137,7 +137,7 @@ const IndexManage: React.FC = () => {
   ];
 
   return (
-    <div style={{ padding: 24 }}>
+    <div className="animate-fade-in-up" style={{ padding: 24 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <Title level={3} style={{ margin: 0 }}>
           <FundProjectionScreenOutlined style={{ marginRight: 12 }} />

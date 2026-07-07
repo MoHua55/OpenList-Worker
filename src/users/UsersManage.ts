@@ -14,13 +14,24 @@ const reg = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 // JWT 工具（使用 Web Crypto API，兼容 Cloudflare Workers）
 // ============================================================
 
-/** 获取 JWT 密钥（从环境变量或默认值） */
+/** 获取 JWT 密钥（从环境变量，未配置时抛出错误） */
 function getJwtSecret(c: Context): string {
+    const env = (c.env as any);
+    const secret = env?.JWT_SECRET || env?.KV_DATA?.JWT_SECRET;
+    if (!secret || secret.length < 16) {
+        throw new Error('JWT_SECRET_NOT_CONFIGURED');
+    }
+    return secret;
+}
+
+/** 检查 JWT 密钥是否已配置 */
+export function isJwtSecretConfigured(c: Context): boolean {
     try {
         const env = (c.env as any);
-        return env?.JWT_SECRET || env?.KV_DATA?.JWT_SECRET || 'openlist-default-secret-change-in-production';
+        const secret = env?.JWT_SECRET || env?.KV_DATA?.JWT_SECRET;
+        return !!(secret && secret.length >= 16);
     } catch {
-        return 'openlist-default-secret-change-in-production';
+        return false;
     }
 }
 
@@ -539,12 +550,11 @@ export class UsersManage {
     }
 
     // ============================================================
-    // 判断用户是否为管理员
+    // 判断用户是否为管理员（仅基于 users_mask，不依赖数据库角色查询）
     // ============================================================
-    static isAdmin(user: UsersConfig): boolean {
+    static isAdmin(user: any): boolean {
         if (!user) return false;
-        return user.users_name === 'admin' ||
-            user.users_mask === 'admin' ||
+        return user.users_mask === 'admin' ||
             (typeof user.users_mask === 'string' && user.users_mask.includes('admin'));
     }
 }

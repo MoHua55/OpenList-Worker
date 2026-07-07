@@ -41,10 +41,23 @@ export function authRoutes(app: Hono<any>) {
     // ------------------------------------------------------------------
     // POST /api/auth/register — 用户注册（公开接口）
     // Body: { username: string, password: string, email?: string }
+    // 安全修复 SEC-11: 注册前检查系统 allow_registration 开关
     // ------------------------------------------------------------------
     app.post('/api/auth/register', async (c: Context): Promise<any> => {
         let body: any = {};
         try { body = await c.req.json(); } catch { return errorResp(c, '请求体格式错误', 400); }
+
+        // 检查系统注册开关
+        try {
+            const { AdminManage } = await import('../admin/AdminManage');
+            const adminManage = new AdminManage(c);
+            const setting = await adminManage.select('allow_registration');
+            const allowed = setting.data?.[0]?.admin_data;
+            // 默认允许注册；明确设置为 'false' 时禁止
+            if (allowed === 'false' || allowed === '0') {
+                return errorResp(c, '系统已关闭注册功能，请联系管理员', 403);
+            }
+        } catch { /* 读取设置失败时允许注册（降级处理） */ }
 
         const { username, password, email } = body;
         if (!username || !password) return errorResp(c, '用户名和密码不能为空', 400);
@@ -163,7 +176,8 @@ export function authRoutes(app: Hono<any>) {
 
     // ------------------------------------------------------------------
     // POST /api/me/update — 更新当前用户信息
-    // Body: { username?: string, password?: string, sso_id?: string }
+    // Body: { email?: string, password?: string }
+    // 注意：不允许修改用户名（防止权限提升攻击，SEC-02）
     // ------------------------------------------------------------------
     app.post('/api/me/update', async (c: Context): Promise<any> => {
         const user = c.get('user');
@@ -172,8 +186,14 @@ export function authRoutes(app: Hono<any>) {
         let body: any = {};
         try { body = await c.req.json(); } catch { return errorResp(c, '请求体格式错误', 400); }
 
+        // 安全限制：不允许修改用户名
+        if (body.username && body.username !== user.users_name) {
+            return errorResp(c, '用户名不可修改', 403);
+        }
+
         const updateData: any = { users_name: user.users_name };
-        if (body.username) updateData.users_name = body.username;
+        // 仅允许修改邮箱和密码
+        if (body.email !== undefined) updateData.users_mail = body.email;
         if (body.password) updateData.users_pass = body.password;
 
         const users = new UsersManage(c);
@@ -209,7 +229,7 @@ async function generateTOTP(secret: string, counter: number): Promise<string> {
     const bytes: number[] = [];
     for (const char of cleanSecret) {
         const idx = base32Chars.indexOf(char);
-        if (idx === -1) continue;
+        if (idx < 0) continue;
         value = (value << 5) | idx;
         bits += 5;
         if (bits >= 8) {
@@ -218,22 +238,26 @@ async function generateTOTP(secret: string, counter: number): Promise<string> {
         }
     }
 
-    // HMAC-SHA1
-    const keyBytes = new Uint8Array(bytes);
+    // counter → 8字节大端序
     const counterBytes = new Uint8Array(8);
-    const view = new DataView(counterBytes.buffer);
-    view.setUint32(4, counter & 0xffffffff);
+    let c = counter;
+    for (let i = 7; i >= 0; i--) {
+        counterBytes[i] = c & 0xff;
+        c = Math.floor(c / 256);
+    }
 
-    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+    // HMAC-SHA1
+    const key = await crypto.subtle.importKey(
+        'raw', new Uint8Array(bytes), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']
+    );
     const sig = await crypto.subtle.sign('HMAC', key, counterBytes);
-    const sigBytes = new Uint8Array(sig);
+    const hash = new Uint8Array(sig);
 
-    // Dynamic truncation
-    const offset = sigBytes[19] & 0xf;
-    const code = ((sigBytes[offset] & 0x7f) << 24) |
-                 ((sigBytes[offset + 1] & 0xff) << 16) |
-                 ((sigBytes[offset + 2] & 0xff) << 8) |
-                 (sigBytes[offset + 3] & 0xff);
-
-    return (code % 1000000).toString().padStart(6, '0');
+    // 动态截断
+    const offset = hash[hash.length - 1] & 0x0f;
+    const code = ((hash[offset] & 0x7f) << 24)
+        | ((hash[offset + 1] & 0xff) << 16)
+        | ((hash[offset + 2] & 0xff) << 8)
+        | (hash[offset + 3] & 0xff);
+    return String(code % 1_000_000).padStart(6, '0');
 }

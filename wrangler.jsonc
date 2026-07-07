@@ -9,11 +9,20 @@
 
   // ── 环境变量 ──────────────────────────────────────────────────────────────
   "vars": {
+    // ★ 必填：JWT 认证密钥（至少16位随机字符串，未配置将拒绝所有登录请求）
+    // 生成示例：openssl rand -hex 32
+    "JWT_SECRET": "",
+
     // D1 是否启用（true=使用D1/远程数据库，false=仅使用KV）
     "ENABLE_D1": true,
     // D1 连接地址，留空或填 "local://" 则使用下方绑定的 CF D1 本地数据库
     // 也可填远程数据库连接串，格式见下方说明
-    "REMOTE_D1": ""
+    "REMOTE_D1": "",
+
+    // 媒体库刮削：TMDB API Key（可选，配置后视频类媒体可获取海报/简介/评分）
+    // 在 https://www.themoviedb.org/settings/api 免费申请
+    // 未配置时视频不刮削，音乐/书籍仍可正常刮削（使用免费公共 API）
+    "TMDB_API_KEY": ""
     /* ── REMOTE_D1 连接串格式说明 ─────────────────────────────────────────
        local://                                          → 使用 CF D1 绑定（默认）
        mysql://<user>:<pass>@<host>:<port>/<db>          → MySQL / MariaDB

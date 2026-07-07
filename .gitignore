@@ -175,3 +175,5 @@ vite.config.ts.timestamp-*
 wrangler.test.jsonc
 wrangler.test.jsonc
 public
+pages/.codebuddy
+.codebuddy

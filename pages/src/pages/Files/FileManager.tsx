@@ -2,7 +2,7 @@
  * 文件管理器 — 核心页面
  * 支持文件浏览、上传、下载、复制、移动、删除、重命名、分享、加密、压缩
  */
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useReducer } from 'react';
 import {
   Card, Table, Button, Space, Breadcrumb, Dropdown, Modal, Input, Upload, message,
   Typography, Tooltip, Empty, Skeleton, Select, InputNumber, Form, Tree, Spin,
@@ -43,6 +43,82 @@ interface ContextMenuPos {
   record: FileItem;
 }
 
+// ─── 对话框统一状态类型 ────────────────────────────────────────────────────────
+interface DialogState {
+  // 新建文件夹
+  newFolderOpen: boolean;
+  newFolderName: string;
+  // 重命名
+  renameOpen: boolean;
+  renameTarget: FileItem | null;
+  renameName: string;
+  // 移动
+  moveOpen: boolean;
+  moveTarget: FileItem | null;
+  moveDest: string;
+  // 复制
+  copyOpen: boolean;
+  copyTarget: FileItem | null;
+  copyDest: string;
+  // 分享
+  shareOpen: boolean;
+  shareTarget: FileItem | null;
+  shareExpire: number;
+  sharePass: string;
+  shareLink: string;
+  shareLoading: boolean;
+  // 加密
+  encryptOpen: boolean;
+  encryptTarget: FileItem | null;
+  encryptGroup: string;
+  encryptGroups: { crypt_name: string; crypt_pass?: string }[];
+  encryptLoading: boolean;
+  // 解密
+  decryptOpen: boolean;
+  decryptTarget: FileItem | null;
+  decryptPass: string;
+  decryptLoading: boolean;
+  // 文件夹编辑
+  folderEditOpen: boolean;
+  folderEditTarget: FileItem | null;
+  folderMatesName: string;
+  folderCryptName: string;
+  folderEditLoading: boolean;
+  matesOptions: { mates_name: string }[];
+  // 压缩
+  compressOpen: boolean;
+  compressTarget: FileItem | null;
+  compressFormat: string;
+  compressName: string;
+  compressLoading: boolean;
+}
+
+// 对话框 Action：使用 Partial 合并，保持灵活简洁
+type DialogAction = { type: 'UPDATE'; payload: Partial<DialogState> };
+
+// 对话框初始状态
+const initialDialogState: DialogState = {
+  newFolderOpen: false, newFolderName: '',
+  renameOpen: false, renameTarget: null, renameName: '',
+  moveOpen: false, moveTarget: null, moveDest: '',
+  copyOpen: false, copyTarget: null, copyDest: '',
+  shareOpen: false, shareTarget: null, shareExpire: 7, sharePass: '', shareLink: '', shareLoading: false,
+  encryptOpen: false, encryptTarget: null, encryptGroup: '', encryptGroups: [], encryptLoading: false,
+  decryptOpen: false, decryptTarget: null, decryptPass: '', decryptLoading: false,
+  folderEditOpen: false, folderEditTarget: null, folderMatesName: '', folderCryptName: '', folderEditLoading: false, matesOptions: [],
+  compressOpen: false, compressTarget: null, compressFormat: 'zip', compressName: '', compressLoading: false,
+};
+
+// 对话框 Reducer — 统一合并部分状态更新
+function dialogReducer(state: DialogState, action: DialogAction): DialogState {
+  switch (action.type) {
+    case 'UPDATE':
+      return { ...state, ...action.payload };
+    default:
+      return state;
+  }
+}
+
 const FileManager: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -58,70 +134,31 @@ const FileManager: React.FC = () => {
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
 
-  // 新建文件夹对话框
-  const [newFolderOpen, setNewFolderOpen] = useState(false);
-  const [newFolderName, setNewFolderName] = useState('');
+  // ─── 对话框统一状态管理（使用 useReducer 替代多个 useState） ──────────────
+  const [dialog, dispatch] = useReducer(dialogReducer, initialDialogState);
+  
+  // 解构所有对话框状态，方便在 JSX 和 handlers 中使用
+  const {
+    newFolderOpen, newFolderName,
+    renameOpen, renameTarget, renameName,
+    moveOpen, moveTarget, moveDest,
+    copyOpen, copyTarget, copyDest,
+    shareOpen, shareTarget, shareExpire, sharePass, shareLink, shareLoading,
+    encryptOpen, encryptTarget, encryptGroup, encryptGroups, encryptLoading,
+    decryptOpen, decryptTarget, decryptPass, decryptLoading,
+    folderEditOpen, folderEditTarget, folderMatesName, folderCryptName, folderEditLoading, matesOptions,
+    compressOpen, compressTarget, compressFormat, compressName, compressLoading,
+  } = dialog;
 
-  // 重命名对话框
-  const [renameOpen, setRenameOpen] = useState(false);
-  const [renameTarget, setRenameTarget] = useState<FileItem | null>(null);
-  const [renameName, setRenameName] = useState('');
-
-  // 移动对话框
-  const [moveOpen, setMoveOpen] = useState(false);
-  const [moveTarget, setMoveTarget] = useState<FileItem | null>(null);
-  const [moveDest, setMoveDest] = useState('');
-
-  // 复制对话框
-  const [copyOpen, setCopyOpen] = useState(false);
-  const [copyTarget, setCopyTarget] = useState<FileItem | null>(null);
-  const [copyDest, setCopyDest] = useState('');
-
-  // 分享对话框
-  const [shareOpen, setShareOpen] = useState(false);
-  const [shareTarget, setShareTarget] = useState<FileItem | null>(null);
-  const [shareExpire, setShareExpire] = useState<number>(7);
-  const [sharePass, setSharePass] = useState('');
-  const [shareLink, setShareLink] = useState('');
-  const [shareLoading, setShareLoading] = useState(false);
-
-  // 加密对话框
-  const [encryptOpen, setEncryptOpen] = useState(false);
-  const [encryptTarget, setEncryptTarget] = useState<FileItem | null>(null);
-  const [encryptGroup, setEncryptGroup] = useState<string>('');
-  const [encryptGroups, setEncryptGroups] = useState<{ crypt_name: string; crypt_pass?: string }[]>([]);
-  const [encryptLoading, setEncryptLoading] = useState(false);
-
-  // 解密对话框
-  const [decryptOpen, setDecryptOpen] = useState(false);
-  const [decryptTarget, setDecryptTarget] = useState<FileItem | null>(null);
-  const [decryptPass, setDecryptPass] = useState('');
-  const [decryptLoading, setDecryptLoading] = useState(false);
-
-  // 目录树（复制/移动用）
+  // 目录树状态（保留为独立 useState，因为 onLoadDirData 中使用函数式更新）
   const [dirTreeData, setDirTreeData] = useState<any[]>([]);
   const [dirTreeLoading, setDirTreeLoading] = useState(false);
-
-  // 文件夹编辑对话框
-  const [folderEditOpen, setFolderEditOpen] = useState(false);
-  const [folderEditTarget, setFolderEditTarget] = useState<FileItem | null>(null);
-  const [folderMatesName, setFolderMatesName] = useState('');
-  const [folderCryptName, setFolderCryptName] = useState('');
-  const [folderEditLoading, setFolderEditLoading] = useState(false);
-  const [matesOptions, setMatesOptions] = useState<{ mates_name: string }[]>([]);
-
-  // 压缩对话框
-  const [compressOpen, setCompressOpen] = useState(false);
-  const [compressTarget, setCompressTarget] = useState<FileItem | null>(null);
-  const [compressFormat, setCompressFormat] = useState('zip');
-  const [compressName, setCompressName] = useState('');
-  const [compressLoading, setCompressLoading] = useState(false);
 
   // 加载加密组列表
   const loadEncryptGroups = useCallback(async () => {
     try {
       const res = await api.post('/api/admin/setting/list', { group: 'crypt' });
-      if (res?.code === 200 && res?.data) setEncryptGroups(res.data);
+      if (res?.code === 200 && res?.data) dispatch({ type: 'UPDATE', payload: { encryptGroups: res.data } });
     } catch { /* 忽略 */ }
   }, []);
 
@@ -129,7 +166,7 @@ const FileManager: React.FC = () => {
   const loadMatesOptions = useCallback(async () => {
     try {
       const res = await api.post('/api/admin/meta/list', {});
-      if (res?.code === 200 && res?.data) setMatesOptions(res.data);
+      if (res?.code === 200 && res?.data) dispatch({ type: 'UPDATE', payload: { matesOptions: res.data } });
     } catch { /* 忽略 */ }
   }, []);
 
@@ -319,7 +356,7 @@ const FileManager: React.FC = () => {
       const res = await api.post('/api/fs/mkdir', { path: newPath });
       if (res?.code === 200) {
         message.success(t('common.success'));
-        setNewFolderOpen(false); setNewFolderName(''); loadFiles();
+        dispatch({ type: 'UPDATE', payload: {newFolderOpen: false, newFolderName: ''} }); loadFiles();
       } else message.error(res?.message || t('common.failed'));
     } catch { message.error(t('common.failed')); }
   };
@@ -331,7 +368,7 @@ const FileManager: React.FC = () => {
       const res = await api.post('/api/fs/rename', { path: getFilePath(renameTarget), name: renameName });
       if (res?.code === 200) {
         message.success(t('common.success'));
-        setRenameOpen(false); setRenameTarget(null); loadFiles();
+        dispatch({ type: 'UPDATE', payload: {renameOpen: false, renameTarget: null} }); loadFiles();
       } else message.error(res?.message || t('common.failed'));
     } catch { message.error(t('common.failed')); }
   };
@@ -343,7 +380,7 @@ const FileManager: React.FC = () => {
       const res = await api.post('/api/fs/move', { src_dir: currentPath, dst_dir: moveDest, names: [moveTarget.fileName] });
       if (res?.code === 200) {
         message.success(t('common.success'));
-        setMoveOpen(false); setMoveTarget(null); setMoveDest(''); loadFiles();
+        dispatch({ type: 'UPDATE', payload: {moveOpen: false, moveTarget: null, moveDest: ''} }); loadFiles();
       } else message.error(res?.message || t('common.failed'));
     } catch { message.error(t('common.failed')); }
   };
@@ -355,7 +392,7 @@ const FileManager: React.FC = () => {
       const res = await api.post('/api/fs/copy', { src_dir: currentPath, dst_dir: copyDest, names: [copyTarget.fileName] });
       if (res?.code === 200) {
         message.success(t('common.success'));
-        setCopyOpen(false); setCopyTarget(null); setCopyDest(''); loadFiles();
+        dispatch({ type: 'UPDATE', payload: {copyOpen: false, copyTarget: null, copyDest: ''} }); loadFiles();
       } else message.error(res?.message || t('common.failed'));
     } catch { message.error(t('common.failed')); }
   };
@@ -363,7 +400,7 @@ const FileManager: React.FC = () => {
   // 分享文件
   const handleShare = async () => {
     if (!shareTarget) return;
-    setShareLoading(true);
+    dispatch({ type: 'UPDATE', payload: { shareLoading: true } });
     try {
       const endsDate = shareExpire > 0
         ? new Date(Date.now() + shareExpire * 24 * 3600 * 1000).toISOString()
@@ -401,18 +438,18 @@ const FileManager: React.FC = () => {
       });
       if (res?.code === 200 && res?.data) {
         const id = res.data.id || res.data.share_uuid || '';
-        setShareLink(id ? `${window.location.origin}/s/${id}` : `${window.location.origin}/s/`);
+        dispatch({ type: 'UPDATE', payload: { shareLink: id ? `${window.location.origin}/s/${id}` : `${window.location.origin}/s/` } });
       } else {
         message.error(res?.message || t('common.failed'));
       }
     } catch { message.error(t('common.failed')); }
-    finally { setShareLoading(false); }
+    finally { dispatch({ type: 'UPDATE', payload: { shareLoading: false } }); }
   };
 
   // 加密文件（关联加密组到文件路径的 meta 规则）
   const handleEncrypt = async () => {
     if (!encryptTarget || !encryptGroup) return;
-    setEncryptLoading(true);
+    dispatch({ type: 'UPDATE', payload: { encryptLoading: true } });
     try {
       const filePath = getFilePath(encryptTarget);
       const res = await api.post('/api/admin/meta/create', {
@@ -423,16 +460,16 @@ const FileManager: React.FC = () => {
       });
       if (res?.code === 200) {
         message.success('加密关联成功');
-        setEncryptOpen(false); setEncryptTarget(null); setEncryptGroup('');
+        dispatch({ type: 'UPDATE', payload: {encryptOpen: false, encryptTarget: null, encryptGroup: ''} });
       } else message.error(res?.message || t('common.failed'));
     } catch { message.error(t('common.failed')); }
-    finally { setEncryptLoading(false); }
+    finally { dispatch({ type: 'UPDATE', payload: { encryptLoading: false } }); }
   };
 
   // 解密文件（移除路径的加密关联或解密文件内容）
   const handleDecrypt = async () => {
     if (!decryptTarget) return;
-    setDecryptLoading(true);
+    dispatch({ type: 'UPDATE', payload: { decryptLoading: true } });
     try {
       const filePath = getFilePath(decryptTarget);
       // 调用文件其他操作API（解密）
@@ -443,19 +480,19 @@ const FileManager: React.FC = () => {
       });
       if (res?.code === 200) {
         message.success('文件解密成功');
-        setDecryptOpen(false); setDecryptTarget(null); setDecryptPass('');
+        dispatch({ type: 'UPDATE', payload: {decryptOpen: false, decryptTarget: null, decryptPass: ''} });
         loadFiles();
       } else {
         message.error(res?.message || '解密失败');
       }
     } catch { message.error('解密失败'); }
-    finally { setDecryptLoading(false); }
+    finally { dispatch({ type: 'UPDATE', payload: { decryptLoading: false } }); }
   };
 
   // 文件夹编辑（分配路径规则和加密组）
   const handleFolderEdit = async () => {
     if (!folderEditTarget) return;
-    setFolderEditLoading(true);
+    dispatch({ type: 'UPDATE', payload: { folderEditLoading: true } });
     try {
       const folderPath = getFilePath(folderEditTarget);
       const res = await api.post('/api/admin/meta/create', {
@@ -466,32 +503,33 @@ const FileManager: React.FC = () => {
       });
       if (res?.code === 200) {
         message.success('文件夹配置已保存');
-        setFolderEditOpen(false); setFolderEditTarget(null); setFolderMatesName(''); setFolderCryptName('');
+        dispatch({ type: 'UPDATE', payload: {folderEditOpen: false, folderEditTarget: null, folderMatesName: '', folderCryptName: ''} });
       } else message.error(res?.message || t('common.failed'));
     } catch { message.error(t('common.failed')); }
-    finally { setFolderEditLoading(false); }
+    finally { dispatch({ type: 'UPDATE', payload: { folderEditLoading: false } }); }
   };
 
   // 压缩文件（创建压缩任务）
   const handleCompress = async () => {
     if (!compressTarget || !compressName.trim()) return;
-    setCompressLoading(true);
+    dispatch({ type: 'UPDATE', payload: { compressLoading: true } });
     try {
       const userName = currentUser?.users_name || '';
-      if (!userName) { message.error('用户未登录'); setCompressLoading(false); return; }
+      if (!userName) { message.error('用户未登录'); dispatch({ type: 'UPDATE', payload: { compressLoading: false } }); return; }
       const outputPath = `${currentPath === '/' ? '' : currentPath}/${compressName}.${compressFormat}`;
-      const res = await api.post('/api/task/offline_download/add', {
-        type: 'compress',
-        urls: [getFilePath(compressTarget)],
-        save_path: outputPath,
-        tool: compressFormat,
+      // 压缩使用 /api/fs/other (method=compress)，与 Go 后端保持一致
+      const res = await api.post('/api/fs/other', {
+        method: 'compress',
+        src_path: getFilePath(compressTarget),
+        dst_path: outputPath,
+        args: { format: compressFormat },
       });
       if (res?.code === 200) {
         message.success(t('common.success'));
-        setCompressOpen(false); setCompressTarget(null); setCompressName(''); loadFiles();
+        dispatch({ type: 'UPDATE', payload: {compressOpen: false, compressTarget: null, compressName: ''} }); loadFiles();
       } else message.error(res?.message || t('common.failed'));
     } catch { message.error(t('common.failed')); }
-    finally { setCompressLoading(false); }
+    finally { dispatch({ type: 'UPDATE', payload: { compressLoading: false } }); }
   };
 
   // 上传文件
@@ -520,23 +558,23 @@ const FileManager: React.FC = () => {
 
   // 打开加密对话框时加载加密组
   const openEncryptDialog = (record: FileItem) => {
-    setEncryptTarget(record); setEncryptGroup(''); setEncryptOpen(true);
+    dispatch({ type: 'UPDATE', payload: {encryptTarget: record, encryptGroup: '', encryptOpen: true} });
     loadEncryptGroups();
   };
 
   // 打开文件夹编辑对话框
   const openFolderEditDialog = (record: FileItem) => {
-    setFolderEditTarget(record); setFolderMatesName(''); setFolderCryptName(''); setFolderEditOpen(true);
+    dispatch({ type: 'UPDATE', payload: {folderEditTarget: record, folderMatesName: '', folderCryptName: '', folderEditOpen: true} });
     loadEncryptGroups(); loadMatesOptions();
   };
 
   // 打开移动/复制对话框时初始化目录树
   const openMoveDialog = (record: FileItem) => {
-    setMoveTarget(record); setMoveDest(''); setMoveOpen(true);
+    dispatch({ type: 'UPDATE', payload: {moveTarget: record, moveDest: '', moveOpen: true} });
     initDirTree();
   };
   const openCopyDialog = (record: FileItem) => {
-    setCopyTarget(record); setCopyDest(currentPath); setCopyOpen(true);
+    dispatch({ type: 'UPDATE', payload: {copyTarget: record, copyDest: currentPath, copyOpen: true} });
     initDirTree();
   };
 
@@ -550,14 +588,14 @@ const FileManager: React.FC = () => {
       { key: 'folder-edit', icon: <EditOutlined />, label: '编辑文件夹', onClick: () => { setContextMenu(null); openFolderEditDialog(record); } },
       { type: 'divider' as const },
     ]),
-    { key: 'rename', icon: <EditOutlined />, label: t('common.rename'), onClick: (e?: any) => { e?.stopPropagation?.(); setContextMenu(null); setRenameTarget(record); setRenameName(record.fileName); setRenameOpen(true); } },
+    { key: 'rename', icon: <EditOutlined />, label: t('common.rename'), onClick: (e?: any) => { e?.stopPropagation?.(); setContextMenu(null); dispatch({ type: 'UPDATE', payload: {renameTarget: record, renameName: record.fileName, renameOpen: true} }); } },
     { key: 'copy', icon: <CopyOutlined />, label: t('common.copy'), onClick: () => { setContextMenu(null); openCopyDialog(record); } },
     { key: 'move', icon: <ScissorOutlined />, label: t('common.move'), onClick: () => { setContextMenu(null); openMoveDialog(record); } },
     { type: 'divider' as const },
-    { key: 'share', icon: <ShareAltOutlined />, label: t('common.share'), onClick: () => { setContextMenu(null); setShareTarget(record); setShareLink(''); setShareExpire(7); setSharePass(''); setShareOpen(true); } },
+    { key: 'share', icon: <ShareAltOutlined />, label: t('common.share'), onClick: () => { setContextMenu(null); dispatch({ type: 'UPDATE', payload: {shareTarget: record, shareLink: '', shareExpire: 7, sharePass: '', shareOpen: true} }); } },
     { key: 'encrypt', icon: <LockOutlined />, label: t('common.encrypt'), onClick: () => { setContextMenu(null); openEncryptDialog(record); } },
-    { key: 'decrypt', icon: <LockOutlined />, label: '解密', onClick: () => { setContextMenu(null); setDecryptTarget(record); setDecryptPass(''); setDecryptOpen(true); } },
-    { key: 'compress', icon: <FileZipOutlined />, label: t('common.unzip'), onClick: () => { setContextMenu(null); setCompressTarget(record); setCompressName(record.fileName.replace(/\.[^.]+$/, '') || record.fileName); setCompressFormat('zip'); setCompressOpen(true); } },
+    { key: 'decrypt', icon: <LockOutlined />, label: '解密', onClick: () => { setContextMenu(null); dispatch({ type: 'UPDATE', payload: {decryptTarget: record, decryptPass: '', decryptOpen: true} }); } },
+    { key: 'compress', icon: <FileZipOutlined />, label: t('common.unzip'), onClick: () => { setContextMenu(null); dispatch({ type: 'UPDATE', payload: {compressTarget: record, compressName: record.fileName.replace(/\.[^.]+$/, '') || record.fileName, compressFormat: 'zip', compressOpen: true} }); } },
     { type: 'divider' as const },
     { key: 'delete', icon: <DeleteOutlined />, label: t('common.delete'), danger: true, onClick: () => { setContextMenu(null); handleDelete(record); } },
   ];
@@ -632,7 +670,7 @@ const FileManager: React.FC = () => {
                 onClick={() => setViewMode(v => v === 'list' ? 'grid' : 'list')}
               />
             </Tooltip>
-            <Button icon={<FolderAddOutlined />} onClick={() => setNewFolderOpen(true)}>
+            <Button icon={<FolderAddOutlined />} onClick={() => dispatch({ type: 'UPDATE', payload: { newFolderOpen: true } })}>
               {t('files.newFolder')}
             </Button>
             <Upload showUploadList={false} beforeUpload={handleUpload} multiple>
@@ -793,31 +831,31 @@ const FileManager: React.FC = () => {
       {/* 新建文件夹对话框 */}
       <Modal
         title={t('files.newFolder')} open={newFolderOpen}
-        onOk={handleCreateFolder} onCancel={() => { setNewFolderOpen(false); setNewFolderName(''); }}
+        onOk={handleCreateFolder} onCancel={() => { dispatch({ type: 'UPDATE', payload: {newFolderOpen: false, newFolderName: ''} }); }}
         okText={t('common.confirm')} cancelText={t('common.cancel')}
       >
         <Input placeholder={t('files.newFolder')} value={newFolderName}
-          onChange={(e) => setNewFolderName(e.target.value)} onPressEnter={handleCreateFolder} autoFocus />
+          onChange={(e) => dispatch({ type: 'UPDATE', payload: { newFolderName: e.target.value } })} onPressEnter={handleCreateFolder} autoFocus />
       </Modal>
 
       {/* 重命名对话框 */}
       <Modal
         title={t('common.rename')} open={renameOpen}
-        onOk={handleRename} onCancel={() => { setRenameOpen(false); setRenameTarget(null); }}
+        onOk={handleRename} onCancel={() => { dispatch({ type: 'UPDATE', payload: {renameOpen: false, renameTarget: null} }); }}
         okText={t('common.confirm')} cancelText={t('common.cancel')}
       >
-        <Input value={renameName} onChange={(e) => setRenameName(e.target.value)} onPressEnter={handleRename} autoFocus />
+        <Input value={renameName} onChange={(e) => dispatch({ type: 'UPDATE', payload: { renameName: e.target.value } })} onPressEnter={handleRename} autoFocus />
       </Modal>
 
       {/* 移动对话框 */}
       <Modal
         title={`移动 "${moveTarget?.fileName}"`} open={moveOpen}
-        onOk={handleMove} onCancel={() => { setMoveOpen(false); setMoveTarget(null); setMoveDest(''); }}
+        onOk={handleMove} onCancel={() => { dispatch({ type: 'UPDATE', payload: {moveOpen: false, moveTarget: null, moveDest: ''} }); }}
         okText={t('common.confirm')} cancelText={t('common.cancel')}
       >
         <Form layout="vertical">
           <Form.Item label="目标目录" extra={moveDest ? `已选择：${moveDest}` : '请在下方目录树中选择目标目录'}>
-            <Input value={moveDest} onChange={(e) => setMoveDest(e.target.value)} placeholder="/目录路径" prefix={<FolderOutlined />} />
+            <Input value={moveDest} onChange={(e) => dispatch({ type: 'UPDATE', payload: { moveDest: e.target.value } })} placeholder="/目录路径" prefix={<FolderOutlined />} />
           </Form.Item>
           <Form.Item>
             <Spin spinning={dirTreeLoading}>
@@ -826,7 +864,7 @@ const FileManager: React.FC = () => {
                   treeData={dirTreeData}
                   loadData={onLoadDirData}
                   selectedKeys={moveDest ? [moveDest] : []}
-                  onSelect={(keys) => setMoveDest(keys[0] as string || '')}
+                  onSelect={(keys) => dispatch({ type: 'UPDATE', payload: { moveDest: keys[0] as string || '' } })}
                   blockNode
                   style={{ fontSize: 13 }}
                 />
@@ -839,12 +877,12 @@ const FileManager: React.FC = () => {
       {/* 复制对话框 */}
       <Modal
         title={`复制 "${copyTarget?.fileName}"`} open={copyOpen}
-        onOk={handleCopy} onCancel={() => { setCopyOpen(false); setCopyTarget(null); setCopyDest(''); }}
+        onOk={handleCopy} onCancel={() => { dispatch({ type: 'UPDATE', payload: {copyOpen: false, copyTarget: null, copyDest: ''} }); }}
         okText={t('common.confirm')} cancelText={t('common.cancel')}
       >
         <Form layout="vertical">
           <Form.Item label="目标目录" extra={copyDest ? `已选择：${copyDest}` : '请在下方目录树中选择目标目录'}>
-            <Input value={copyDest} onChange={(e) => setCopyDest(e.target.value)} placeholder="/目录路径" prefix={<FolderOutlined />} />
+            <Input value={copyDest} onChange={(e) => dispatch({ type: 'UPDATE', payload: { copyDest: e.target.value } })} placeholder="/目录路径" prefix={<FolderOutlined />} />
           </Form.Item>
           <Form.Item>
             <Spin spinning={dirTreeLoading}>
@@ -853,7 +891,7 @@ const FileManager: React.FC = () => {
                   treeData={dirTreeData}
                   loadData={onLoadDirData}
                   selectedKeys={copyDest ? [copyDest] : []}
-                  onSelect={(keys) => setCopyDest(keys[0] as string || '')}
+                  onSelect={(keys) => dispatch({ type: 'UPDATE', payload: { copyDest: keys[0] as string || '' } })}
                   blockNode
                   style={{ fontSize: 13 }}
                 />
@@ -867,7 +905,7 @@ const FileManager: React.FC = () => {
       <Modal
         title={`分享 "${shareTarget?.fileName}"`} open={shareOpen}
         onOk={shareLink ? () => { navigator.clipboard.writeText(shareLink); message.success('链接已复制'); } : handleShare}
-        onCancel={() => { setShareOpen(false); setShareTarget(null); setShareLink(''); setSharePass(''); }}
+        onCancel={() => { dispatch({ type: 'UPDATE', payload: {shareOpen: false, shareTarget: null, shareLink: '', sharePass: ''} }); }}
         okText={shareLink ? '复制链接' : '生成链接'}
         cancelText={t('common.cancel')}
         confirmLoading={shareLoading}
@@ -876,7 +914,7 @@ const FileManager: React.FC = () => {
           <Form.Item label="有效期（天）" extra="设为 0 表示永不过期">
             <InputNumber
               min={0} max={365} value={shareExpire}
-              onChange={(v) => setShareExpire(v ?? 7)}
+              onChange={(v) => dispatch({ type: 'UPDATE', payload: { shareExpire: v ?? 7 } })}
               style={{ width: '100%' }}
               disabled={!!shareLink}
             />
@@ -885,7 +923,7 @@ const FileManager: React.FC = () => {
             <Input.Password
               placeholder="可选，留空表示公开分享"
               value={sharePass}
-              onChange={(e) => setSharePass(e.target.value)}
+              onChange={(e) => dispatch({ type: 'UPDATE', payload: { sharePass: e.target.value } })}
               disabled={!!shareLink}
             />
           </Form.Item>
@@ -900,7 +938,7 @@ const FileManager: React.FC = () => {
       {/* 加密对话框 */}
       <Modal
         title={`加密关联 "${encryptTarget?.fileName}"`} open={encryptOpen}
-        onOk={handleEncrypt} onCancel={() => { setEncryptOpen(false); setEncryptTarget(null); setEncryptGroup(''); }}
+        onOk={handleEncrypt} onCancel={() => { dispatch({ type: 'UPDATE', payload: {encryptOpen: false, encryptTarget: null, encryptGroup: ''} }); }}
         okText="确认关联" cancelText={t('common.cancel')}
         confirmLoading={encryptLoading}
         okButtonProps={{ disabled: !encryptGroup }}
@@ -910,7 +948,7 @@ const FileManager: React.FC = () => {
             <Select
               placeholder="请选择加密组"
               value={encryptGroup || undefined}
-              onChange={setEncryptGroup}
+              onChange={(val) => dispatch({ type: 'UPDATE', payload: { encryptGroup: val } })}
               style={{ width: '100%' }}
               options={encryptGroups.map(g => ({ label: g.crypt_name, value: g.crypt_name }))}
               notFoundContent={<span style={{ color: '#999', fontSize: 12 }}>暂无加密组，请先在「加密配置」中创建</span>}
@@ -922,7 +960,7 @@ const FileManager: React.FC = () => {
       {/* 解密对话框 */}
       <Modal
         title={`解密文件 "${decryptTarget?.fileName}"`} open={decryptOpen}
-        onOk={handleDecrypt} onCancel={() => { setDecryptOpen(false); setDecryptTarget(null); setDecryptPass(''); }}
+        onOk={handleDecrypt} onCancel={() => { dispatch({ type: 'UPDATE', payload: {decryptOpen: false, decryptTarget: null, decryptPass: ''} }); }}
         okText="确认解密" cancelText={t('common.cancel')}
         confirmLoading={decryptLoading}
         okButtonProps={{ disabled: !decryptPass }}
@@ -932,7 +970,7 @@ const FileManager: React.FC = () => {
             <Input.Password
               placeholder="请输入解密密码"
               value={decryptPass}
-              onChange={(e) => setDecryptPass(e.target.value)}
+              onChange={(e) => dispatch({ type: 'UPDATE', payload: { decryptPass: e.target.value } })}
               autoFocus
             />
           </Form.Item>
@@ -942,7 +980,7 @@ const FileManager: React.FC = () => {
       {/* 文件夹编辑对话框 */}
       <Modal
         title={`编辑文件夹 "${folderEditTarget?.fileName}"`} open={folderEditOpen}
-        onOk={handleFolderEdit} onCancel={() => { setFolderEditOpen(false); setFolderEditTarget(null); }}
+        onOk={handleFolderEdit} onCancel={() => { dispatch({ type: 'UPDATE', payload: {folderEditOpen: false, folderEditTarget: null} }); }}
         okText="保存配置" cancelText={t('common.cancel')}
         confirmLoading={folderEditLoading}
       >
@@ -951,7 +989,7 @@ const FileManager: React.FC = () => {
             <Select
               placeholder="不加密（留空）"
               value={folderCryptName || undefined}
-              onChange={setFolderCryptName}
+              onChange={(val) => dispatch({ type: 'UPDATE', payload: { folderCryptName: val } })}
               allowClear
               style={{ width: '100%' }}
               options={encryptGroups.map(g => ({ label: g.crypt_name, value: g.crypt_name }))}
@@ -962,7 +1000,7 @@ const FileManager: React.FC = () => {
             <Select
               placeholder="不应用规则（留空）"
               value={folderMatesName || undefined}
-              onChange={setFolderMatesName}
+              onChange={(val) => dispatch({ type: 'UPDATE', payload: { folderMatesName: val } })}
               allowClear
               style={{ width: '100%' }}
               options={matesOptions.map(m => ({ label: m.mates_name, value: m.mates_name }))}
@@ -975,7 +1013,7 @@ const FileManager: React.FC = () => {
       {/* 压缩对话框 */}
       <Modal
         title={`压缩 "${compressTarget?.fileName}"`} open={compressOpen}
-        onOk={handleCompress} onCancel={() => { setCompressOpen(false); setCompressTarget(null); setCompressName(''); }}
+        onOk={handleCompress} onCancel={() => { dispatch({ type: 'UPDATE', payload: {compressOpen: false, compressTarget: null, compressName: ''} }); }}
         okText="开始压缩" cancelText={t('common.cancel')}
         confirmLoading={compressLoading}
       >
@@ -983,7 +1021,7 @@ const FileManager: React.FC = () => {
           <Form.Item label="压缩格式">
             <Select
               value={compressFormat}
-              onChange={setCompressFormat}
+              onChange={(val) => dispatch({ type: 'UPDATE', payload: { compressFormat: val } })}
               options={[
                 { label: 'ZIP (.zip)', value: 'zip' },
                 { label: 'TAR.GZ (.tar.gz)', value: 'tar.gz' },
@@ -994,7 +1032,7 @@ const FileManager: React.FC = () => {
           <Form.Item label="输出文件名" extra={`将保存到当前目录：${currentPath}`}>
             <Input
               value={compressName}
-              onChange={(e) => setCompressName(e.target.value)}
+              onChange={(e) => dispatch({ type: 'UPDATE', payload: { compressName: e.target.value } })}
               addonAfter={`.${compressFormat}`}
               placeholder="压缩包名称"
             />

@@ -30,6 +30,7 @@ const PUBLIC_ROUTE_PREFIXES: string[] = [
     '/api/authn/webauthn_finish_login',
     '/api/public/',
     '/ping',
+    '/api/system/health',
     '/favicon.ico',
     '/robots.txt',
     // 分享下载（无需登录）
@@ -116,7 +117,7 @@ export async function authMiddleware(c: Context, next: Next): Promise<any> {
 }
 
 // ============================================================
-// 管理员权限中间件
+// 管理员权限中间件（仅基于 users_mask，SEC-02）
 // ============================================================
 export async function adminMiddleware(c: Context, next: Next): Promise<any> {
     const user = c.get('user');
@@ -124,8 +125,7 @@ export async function adminMiddleware(c: Context, next: Next): Promise<any> {
         return errorResp(c, '未登录', 401);
     }
     const isAdmin = user.users_mask === 'admin' ||
-        (typeof user.users_mask === 'string' && user.users_mask.includes('admin')) ||
-        user.users_name === 'admin';
+        (typeof user.users_mask === 'string' && user.users_mask.includes('admin'));
     if (!isAdmin) {
         return errorResp(c, '需要管理员权限', 403);
     }
@@ -134,21 +134,47 @@ export async function adminMiddleware(c: Context, next: Next): Promise<any> {
 
 // ============================================================
 // CORS 中间件
+// 安全修复 SEC-05: 使用白名单而非反射任意 Origin，防止 CSRF
 // ============================================================
 export async function corsMiddleware(c: Context, next: Next): Promise<any> {
-    const origin = c.req.header('Origin') || '*';
+    const requestOrigin = c.req.header('Origin');
 
-    c.header('Access-Control-Allow-Origin', origin);
+    // 获取管理员配置的 CORS 白名单
+    let allowedOrigin = '*'; // 默认值
+    try {
+        const { AdminManage } = await import('../admin/AdminManage');
+        const adminManage = new AdminManage(c);
+        const setting = await adminManage.select('cors_allowed_origins');
+        const whitelist = setting.data?.[0]?.admin_data;
+
+        if (whitelist && requestOrigin) {
+            // 白名单格式：逗号分隔的域名列表 "https://example.com,https://app.example.com"
+            const allowed = whitelist.split(',').map((s: string) => s.trim());
+            if (allowed.includes(requestOrigin)) {
+                allowedOrigin = requestOrigin;
+            } else {
+                // 不在白名单中的 Origin 不允许携带凭据
+                allowedOrigin = '*';
+            }
+        } else if (requestOrigin) {
+            // 未配置白名单时，反射 Origin 但不允许凭据（降级安全）
+            allowedOrigin = requestOrigin;
+        }
+    } catch { /* 读取配置失败时使用默认值 */ }
+
+    c.header('Access-Control-Allow-Origin', allowedOrigin);
     c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PROPFIND, MKCOL, COPY, MOVE, LOCK, UNLOCK');
     c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Depth, Destination, Overwrite, X-Token, File-Path, Password, As-Task, Content-Length, Content-Range');
-    c.header('Access-Control-Allow-Credentials', 'true');
     c.header('Access-Control-Max-Age', '86400');
     c.header('Vary', 'Origin');
-
-    if (c.req.method === 'OPTIONS') {
-        return c.text('');
+    // 仅在白名单匹配时允许凭据
+    if (allowedOrigin !== '*') {
+        c.header('Access-Control-Allow-Credentials', 'true');
     }
-
+    // OPTIONS 预检请求直接返回 200，不继续执行后续路由
+    if (c.req.method === 'OPTIONS') {
+        return c.text('', 200);
+    }
     await next();
 }
 

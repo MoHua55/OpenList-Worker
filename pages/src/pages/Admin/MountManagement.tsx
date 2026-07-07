@@ -492,7 +492,7 @@ const MountManagement: React.FC = () => {
   };
 
   return (
-    <div style={{ padding: 24 }}>
+    <div className="animate-fade-in-up" style={{ padding: 24 }}>
       {/* 页面标题栏 */}
       <div
         style={{
