@@ -433,6 +433,10 @@ export const storageApi = {
 
 // 系统设置相关API
 export const settingApi = {
+    
+    // 🛠️ 2. 在这里加上这行（补充缺失的方法，接口路径需与你的后端对应，例如 /api/admin/system/info）
+    getSystemInfo: () => apiService.get('/api/admin/system/info'), 
+
     // 获取公开设置
     getPublicSettings: () =>
         apiService.get('/api/public/settings'),
@@ -542,6 +546,10 @@ export const taskApi = {
     clearSucceeded: (type: string) =>
         apiService.post(`/api/task/${type}/clear_succeeded`, {}),
 };
+// ... 前面是各种 api 定义
+
+// 🛠️ 1. 在这里添加别名导出，让 systemApi 指向 settingApi
+export const systemApi = settingApi;
 
 const api = apiService;
 export default api;
