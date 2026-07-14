@@ -17,7 +17,7 @@ import {
   TeamOutlined,
   DatabaseOutlined,
 } from '@ant-design/icons';
-import { settingApi } from '../../posts/api';
+import { systemApi } from '../../posts/api';
 
 interface SystemInfo {
   version?: string;
