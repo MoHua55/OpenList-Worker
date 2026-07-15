@@ -30,7 +30,7 @@ class ApiService {
         // 安全获取API基础URL，提供默认值
         let baseURL: string;
         try {
-            baseURL = import.meta.env.VITE_API_BASE_URL || 'https://openlistapi.mohua799.us.ci/api';
+            baseURL = import.meta.env.VITE_API_BASE_URL || 'https://could.mohua799.us.ci';
 
         } catch (error) {
             console.warn('无法读取环境变量，使用默认API地址');
